@@ -1,3 +1,5 @@
+import asyncio
+import aiohttp
 import requests
 from bs4 import BeautifulSoup
 import csv
@@ -6,7 +8,8 @@ import time
 import logging
 from urllib.parse import urljoin, urlparse
 from typing import List, Dict, Tuple, Optional
-import unicodedata
+# import unicodedata
+from extract_link import extract_link  
 
 # Set up logging for debugging and monitoring
 logging.basicConfig(
@@ -35,7 +38,7 @@ class MoCWebScraper:
         """
         self.delay = delay
         self.timeout = timeout
-        self.session = requests.Session()
+        # self.session = requests.Session()
         
         # Pre-compile regex patterns for better performance
         self.whitespace_pattern = re.compile(r'\s+')
@@ -48,13 +51,13 @@ class MoCWebScraper:
         self.khmer_range_end = 0x1800
         
         # Set headers to mimic a real browser
-        self.session.headers.update({
+        self.headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
             'Accept-Language': 'en-US,en;q=0.5',
             'Accept-Encoding': 'gzip, deflate',
             'Connection': 'keep-alive'
-        })
+        }
         
     def is_khmer_text(self, text: str) -> bool:
         """
@@ -136,11 +139,35 @@ class MoCWebScraper:
             
             # Extract only paragraph blocks (avoid duplication)
             paragraph_blocks = soup.select('div.article-content div.page-description div[id="paragraphBlock"]')
-            
+
             if not paragraph_blocks:
-                logger.warning("Could not find any paragraph blocks")
+
+                # Try to extract from div.postbox__content > div.postbox__text
+                postbox_text_div = soup.select_one('div.postbox__content > div.postbox__text')
+
+                if postbox_text_div:
+                    paragraphs = postbox_text_div.find_all('div', recursive=False)
+
+                    seen = set()
+
+                    if not paragraphs:
+                        main_text = self.clean_text(postbox_text_div.get_text(separator=' ', strip=True))
+                        if main_text:
+                            lang = 'khmer' if self.is_khmer_text(main_text) else 'english'
+                            content[lang].append(main_text)
+                    else:
+                        for para in paragraphs:
+                            para_text = self.clean_text(para.get_text(separator=' ', strip=True))
+                            if para_text and para_text not in seen:
+                                seen.add(para_text)
+                                lang = 'khmer' if self.is_khmer_text(para_text) else 'english'
+                                content[lang].append(para_text)
+                                
+                else:
+                    logger.warning("Could not find postbox__text div")
+
                 return content
-            
+                    
             logger.info(f"Found {len(paragraph_blocks)} paragraph blocks")
             
             # Extract text from each paragraph block
@@ -210,7 +237,7 @@ class MoCWebScraper:
         return content
 
     
-    def scrape_url(self, url: str) -> Optional[Dict[str, List[str]]]:
+    async def scrape_url(self, session: aiohttp.ClientSession, url: str) -> Optional[Dict[str, List[str]]]:
         """
         Scrape content from a single URL with optimized processing
         
@@ -220,35 +247,35 @@ class MoCWebScraper:
         Returns:
             Dictionary with extracted content or None if failed
         """
+
         try:
             logger.info(f"Scraping URL: {url}")
-            
-            # Add delay to be respectful to the server
-            time.sleep(self.delay)
-            
-            # Make the request
-            response = self.session.get(url, timeout=self.timeout)
-            response.raise_for_status()
-            
-            # Check if we got HTML content
-            content_type = response.headers.get('content-type', '').lower()
-            if 'html' not in content_type:
-                logger.warning(f"URL {url} does not return HTML content")
-                return None
-            
-            # Parse HTML with optimized parser
-            soup = BeautifulSoup(response.content, 'html.parser')
-            
-            # Extract content using optimized method
-            content = self.extract_content(soup)
-            
-            logger.info(f"Extracted {len(content['english'])} English and {len(content['khmer'])} Khmer texts")
-            
-            return content
-            
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Request error for {url}: {str(e)}")
-            return None
+
+            async with session.get(url, timeout=self.timeout) as response:
+
+                if response.status != 200:
+                    logger.warning(f"URL {url} returned status {response.status}")
+                    return None
+                
+                # Check if we got HTML content
+                content_type = response.headers.get('content-type', '').lower()
+                if 'html' not in content_type:
+                    logger.warning(f"URL {url} does not return HTML content")
+                    return None
+                
+                html = await response.text()
+
+                # Parse HTML with optimized parser
+                soup = BeautifulSoup(html, 'html.parser')
+
+                # Extract content using optimized method
+                content = self.extract_content(soup)
+                logger.info(f"Extracted {len(content['english'])} English and {len(content['khmer'])} Khmer texts")
+
+                await asyncio.sleep(self.delay)
+
+                return content
+        
         except Exception as e:
             logger.error(f"Unexpected error scraping {url}: {str(e)}")
             return None
@@ -280,7 +307,7 @@ class MoCWebScraper:
         except Exception:
             return False
     
-    def scrape_multiple_urls(self, urls: List[str]) -> List[Dict]:
+    async def scrape_multiple_urls(self, urls: List[str]) -> List[Dict]:
         """
         Scrape content from multiple URLs with optimized processing
         
@@ -291,34 +318,46 @@ class MoCWebScraper:
             List of dictionaries with scraped content
         """
         results = []
-        
-        for i, url in enumerate(urls, 1):
-            logger.info(f"Processing URL {i}/{len(urls)}: {url}")
-            
-            # Validate URL
-            if not self.validate_url(url):
-                logger.error(f"Invalid URL: {url}")
-                continue
-            
+
+        async with aiohttp.ClientSession(headers=self.headers) as session:
+
+            tasks = []
+
+            for i, url in enumerate(urls, 1):
+
+                # Validate URL
+                if not self.validate_url(url):
+                    logger.error(f"Invalid URL: {url}")
+                    results.append({
+                        'id': i,
+                        'url': url,
+                        'english_texts': [],
+                        'khmer_texts': []
+                    })
+                    continue
+                tasks.append(self.scrape_url(session, url))
+
             # Scrape content
-            content = self.scrape_url(url)
+            responses = await asyncio.gather(*tasks)
             
-            if content:
-                results.append({
-                    'id': i,
-                    'url': url,
-                    'english_texts': content['english'],
-                    'khmer_texts': content['khmer']
-                })
-            else:
-                logger.warning(f"Failed to scrape content from {url}")
-                # Add empty result to maintain ID sequence
-                results.append({
-                    'id': i,
-                    'url': url,
-                    'english_texts': [],
-                    'khmer_texts': []
-                })
+            idx = 1
+            for url, content in zip(urls, responses):
+
+                if content:
+                    results.append({
+                        'id': idx,
+                        'url': url,
+                        'english_texts': content['english'],
+                        'khmer_texts': content['khmer']
+                    })
+                else:
+                    results.append({
+                        'id': idx,
+                        'url': url,
+                        'english_texts': [],
+                        'khmer_texts': []
+                    })
+                idx += 1
         
         return results
 
@@ -388,6 +427,7 @@ def get_urls_from_user() -> List[str]:
     
     print("Enter URLs to scrape (one per line, press Enter twice to finish):")
     print("Example: https://www.moc.gov.kh/news/3122")
+    print("Or enter a page with multiple links (e.g., https://cambodiaip.gov.kh)")
     
     while True:
         url = input("URL: ").strip()
@@ -398,12 +438,22 @@ def get_urls_from_user() -> List[str]:
             else:
                 print("Please enter at least one URL.")
                 continue
-        
-        urls.append(url)
+
+
+        # If the URL ends with .kh, use extract_link to get all links from the page
+        if url.endswith('.kh'):
+            extracted = extract_link(url)
+            if extracted:
+                logging.info(f"Extracted {len(extracted)} links from {url}")
+                urls.extend(extracted)
+            else:
+                logging.warning(f"No links found on {url}")
+        else:
+            urls.append(url)
     
     return urls
 
-def main():
+async def main():
     """
     Main function to run the optimized scraper
     """
@@ -439,7 +489,7 @@ def main():
         start_time = time.time()
         
         # Scrape all URLs
-        results = scraper.scrape_multiple_urls(urls)
+        results = await scraper.scrape_multiple_urls(urls)
         
         # Save results
         scraper.save_to_csv(results, filename)
@@ -465,4 +515,5 @@ def main():
         print(f"An error occurred: {str(e)}")
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
+    # main()
