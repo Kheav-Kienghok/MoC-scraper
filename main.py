@@ -1,15 +1,14 @@
+from urllib.parse import urlparse
+from typing import List, Dict, Optional
+from extract_link import extract_link  
+from model.db_models import ScrapedContent, Session
+from bs4 import BeautifulSoup
 import asyncio
 import aiohttp
-import requests
-from bs4 import BeautifulSoup
 import csv
 import re
 import time
 import logging
-from urllib.parse import urljoin, urlparse
-from typing import List, Dict, Tuple, Optional
-# import unicodedata
-from extract_link import extract_link  
 
 # Set up logging for debugging and monitoring
 logging.basicConfig(
@@ -21,6 +20,7 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+
 
 class MoCWebScraper:
     """
@@ -415,6 +415,41 @@ class MoCWebScraper:
             logger.error(f"Error saving to CSV: {str(e)}")
             raise
 
+    def save_to_db(self, results: List[Dict]):
+        """
+        Save scraped results to the database using SQLAlchemy ORM.
+        Args:
+            results: List of scraped content dictionaries
+        """
+        session = Session()
+        try:
+            row_id = 1
+            for result in results:
+                english_texts = result['english_texts']
+                khmer_texts = result['khmer_texts']
+                max_texts = max(len(english_texts), len(khmer_texts))
+                if max_texts == 0:
+                    session.add(ScrapedContent(
+                        english_text='',
+                        khmer_text=''
+                    ))
+                else:
+                    for i in range(max_texts):
+                        english_text = english_texts[i] if i < len(english_texts) else ''
+                        khmer_text = khmer_texts[i] if i < len(khmer_texts) else ''
+                        session.add(ScrapedContent(
+                            english_text=english_text,
+                            khmer_text=khmer_text
+                        ))
+            session.commit()
+            logger.info("Results saved to the database.")
+        except Exception as e:
+            session.rollback()
+            logger.error(f"Error saving to database: {str(e)}")
+            raise
+        finally:
+            session.close()
+
 
 def get_urls_from_user() -> List[str]:
     """
@@ -472,14 +507,12 @@ async def main():
         print(f"\nWill scrape {len(urls)} URL(s):")
         for i, url in enumerate(urls, 1):
             print(f"  {i}. {url}")
-        
-        # Get output filename
-        filename = input("\nEnter output CSV filename (default: scraped_content.csv): ").strip()
-        if not filename:
-            filename = 'scraped_content.csv'
-        
-        if not filename.endswith('.csv'):
-            filename += '.csv'
+    
+        # Ask user where to save results
+        print("\nWhere would you like to save the results?")
+        print("1. CSV file (default)")
+        print("2. Database (SQLite)")
+        save_choice = input("Enter your choice (1 or 2): ").strip()
         
         # Initialize optimized scraper
         print("\nInitializing optimized scraper...")
@@ -490,9 +523,24 @@ async def main():
         
         # Scrape all URLs
         results = await scraper.scrape_multiple_urls(urls)
+
+        if save_choice == '2':
+            # Save to database
+            filename = 'scraped_content.db'
+            scraper.save_to_db(results)
+            print("Results saved to the database (scraped_content.db)")
+        else:
+            # Save to CSV
+            filename = input("\nEnter output CSV filename (default: scraped_content.csv): ").strip()
+            if not filename:
+                filename = 'scraped_content.csv'
+            if not filename.endswith('.csv'):
+                filename += '.csv'
+            scraper.save_to_csv(results, filename)
+            print(f"Results saved to: {filename}")
         
         # Save results
-        scraper.save_to_csv(results, filename)
+        # scraper.save_to_csv(results, filename)
         
         end_time = time.time()
         processing_time = end_time - start_time
@@ -516,4 +564,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-    # main()
