@@ -6,8 +6,9 @@ import os
 # Load environment variables from .env file
 load_dotenv()  # take environment variables
 
+os.makedirs('databases', exist_ok=True)
 
-DATABASE_ENGINE = os.getenv('DATABASE_ENGINE', 'sqlite:///scraped_content.db')
+DATABASE_ENGINE = os.getenv('DATABASE_ENGINE', 'sqlite:///databases/scraped_content.db')
 
 Base = declarative_base()
 

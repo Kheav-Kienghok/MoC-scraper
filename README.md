@@ -41,3 +41,29 @@ In comparison, using a brute-force method results in a processing time of approx
     ```
 
   This allows easy switching between local file storage and database storage.
+
+## Known Issue & Solution
+
+There is a specific issue with the page [https://moc.gov.kh/news/3126](https://moc.gov.kh/news/3126):  
+The article does not include an English translation for the topic, which results in a mismatch between the Khmer and English content.
+
+### Solution
+
+To ensure the content remains aligned, a check was added to insert an empty string into the English list when the number of Khmer elements exceeds the number of English ones. This ensures both lists stay balanced and aligned properly during processing.
+
+**Relevant code (lines 238-246):**
+
+```python
+def extract_content(self, soup: BeautifulSoup) -> Dict[str, List[str]]:
+  # existing code ...
+
+  english_texts = content['english']
+  khmer_texts = content['khmer']
+
+  total_texts = len(english_texts) + len(khmer_texts)
+
+  # Check if the total number of responses is odd and khmer > english
+  if total_texts % 2 == 1 and len(khmer_texts) > len(english_texts):
+      # Insert empty string at index 0 in english_texts
+      english_texts.insert(0, "")
+```

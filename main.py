@@ -1,7 +1,7 @@
 from urllib.parse import urlparse
 from typing import List, Dict, Optional
 from extract_link import extract_link  
-from model.db_models import ScrapedContent, Session
+from models.db_models import ScrapedContent, Session
 from bs4 import BeautifulSoup
 import asyncio
 import aiohttp
@@ -9,6 +9,7 @@ import csv
 import re
 import time
 import logging
+from pprintpp import pprint
 
 # Set up logging for debugging and monitoring
 logging.basicConfig(
@@ -220,7 +221,7 @@ class MoCWebScraper:
                         content['khmer'].append(title_text)
                     else:
                         content['english'].append(title_text)
-                
+
                 # Process other texts
                 for text in all_texts:
                     if text.strip() and text.strip() != '...':
@@ -233,6 +234,16 @@ class MoCWebScraper:
             
         except Exception as e:
             logger.error(f"Error extracting content: {str(e)}")
+
+        english_texts = content['english']
+        khmer_texts = content['khmer']
+
+        total_texts = len(english_texts) + len(khmer_texts)
+
+        # Check if the total number of responses is odd and khmer > english
+        if total_texts % 2 == 1 and len(khmer_texts) > len(english_texts):
+            # Insert empty string at index 0 in english_texts
+            english_texts.insert(0, "")
             
         return content
 
@@ -344,6 +355,7 @@ class MoCWebScraper:
             for url, content in zip(urls, responses):
 
                 if content:
+
                     results.append({
                         'id': idx,
                         'url': url,
@@ -379,7 +391,6 @@ class MoCWebScraper:
                 
                 # Initialize global row counter for unique IDs
                 row_id = 1
-                
                 # Process each result
                 for result in results:
                     english_texts = result['english_texts']
@@ -526,9 +537,8 @@ async def main():
 
         if save_choice == '2':
             # Save to database
-            filename = 'scraped_content.db'
+            filename = "databases/scraped_content.db"
             scraper.save_to_db(results)
-            print("Results saved to the database (scraped_content.db)")
         else:
             # Save to CSV
             filename = input("\nEnter output CSV filename (default: scraped_content.csv): ").strip()
@@ -537,7 +547,6 @@ async def main():
             if not filename.endswith('.csv'):
                 filename += '.csv'
             scraper.save_to_csv(results, filename)
-            print(f"Results saved to: {filename}")
         
         # Save results
         # scraper.save_to_csv(results, filename)
