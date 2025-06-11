@@ -55,15 +55,33 @@ To ensure the content remains aligned, a check was added to insert an empty stri
 
 ```python
 def extract_content(self, soup: BeautifulSoup) -> Dict[str, List[str]]:
-  # existing code ...
+    # existing code ...
 
-  english_texts = content['english']
-  khmer_texts = content['khmer']
+    english_texts = content['english']
+    khmer_texts = content['khmer']
 
-  total_texts = len(english_texts) + len(khmer_texts)
+    total_texts = len(english_texts) + len(khmer_texts)
 
-  # Check if the total number of responses is odd and khmer > english
-  if total_texts % 2 == 1 and len(khmer_texts) > len(english_texts):
-      # Insert empty string at index 0 in english_texts
-      english_texts.insert(0, "")
+    # Check if the total number of responses is odd and khmer > english
+    if total_texts % 2 == 1 and len(khmer_texts) > len(english_texts):
+        # Insert empty string at index 0 in english_texts
+        english_texts.insert(0, "")
 ```
+
+## Additional Handling for Title Extraction
+
+Some pages do not wrap the title inside an `<h2>` element; instead, the title is placed directly inside a `<div>`.  
+To address this inconsistency, the following logic was added to ensure the title is consistently captured:
+
+**Relevant code (lines 140–145):**
+
+```python
+def extract_content(self, soup: BeautifulSoup) -> Dict[str, List[str]]:
+    # existing code ...
+
+    if title_element is None:
+        # Check for <div> with class 'mobile-title-detail'
+        mobile_title_element = soup.select_one('div.mobile-title-detail')
+        if mobile_title_element:
+            title_text = self.clean_text(mobile_title_element.get_text(strip=True))
+            title_element = mobile_title_element

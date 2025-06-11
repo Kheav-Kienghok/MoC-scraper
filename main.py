@@ -9,7 +9,6 @@ import csv
 import re
 import time
 import logging
-from pprintpp import pprint
 
 # Set up logging for debugging and monitoring
 logging.basicConfig(
@@ -137,6 +136,13 @@ class MoCWebScraper:
             title_element = soup.select_one('h2.title-detail')
             if title_element:
                 title_text = self.clean_text(title_element.get_text(strip=True))
+
+            if title_element is None:
+                # Also check for div with class 'mobile-title-detail'
+                mobile_title_element = soup.select_one('div.mobile-title-detail')
+                if mobile_title_element:
+                    title_text = self.clean_text(mobile_title_element.get_text(strip=True))
+                    title_element = mobile_title_element
             
             # Extract only paragraph blocks (avoid duplication)
             paragraph_blocks = soup.select('div.article-content div.page-description div[id="paragraphBlock"]')
