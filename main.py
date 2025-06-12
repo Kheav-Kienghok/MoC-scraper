@@ -138,13 +138,6 @@ class MoCWebScraper:
             title_element = soup.select_one('h2.title-detail')
             if title_element:
                 title_text = self.clean_text(title_element.get_text(strip=True))
-
-            # if title_element is None:
-            #     # Also check for div with class 'mobile-title-detail'
-            #     mobile_title_element = soup.select_one('div.mobile-title-detail')
-            #     if mobile_title_element:
-            #         title_text = self.clean_text(mobile_title_element.get_text(strip=True))
-            #         title_element = mobile_title_element
             
             # Extract only paragraph blocks (avoid duplication)
             paragraph_blocks = soup.select('div.article-content div.page-description div[id="paragraphBlock"]')
@@ -242,17 +235,26 @@ class MoCWebScraper:
 
             # Handle case where we have different numbers of English and Khmer texts
             if content['english'] and content['khmer']:
-                content = self.align_texts(content['english'], content['khmer'])
+                if len(content['english']) != len(content['khmer']):
+                    logger.warning("Different number of English and Khmer texts, aligning them")
+                    # Align texts using KhmerEnglishAligner
+                    content = self.align_texts(content['english'], content['khmer'])
             
         except Exception as e:
             logger.error(f"Error extracting content: {str(e)}")
-            
+
         return content
     
     def align_texts(self, english_texts: List[str], khmer_texts: List[str]):
         """
-        Aligns English and Khmer texts using KhmerEnglishAligner.
-        Returns a list of (ID, English_Text, Khmer_Text) tuples.
+        Align English and Khmer sentence lists using KhmerEnglishAligner.
+
+        Args:
+            english_texts: List of English sentences.
+            khmer_texts: List of Khmer sentences.
+
+        Returns:
+            Dictionary with aligned 'english' and 'khmer' sentence lists.
         """
         data = {
             'english': english_texts,

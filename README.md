@@ -42,46 +42,8 @@ In comparison, using a brute-force method results in a processing time of approx
 
   This allows easy switching between local file storage and database storage.
 
-## Known Issue & Solution
+## 🐞 Known Issue & Solution
 
-There is a specific issue with the page [https://moc.gov.kh/news/3126](https://moc.gov.kh/news/3126):  
-The article does not include an English translation for the topic, which results in a mismatch between the Khmer and English content.
+A known issue was identified on the page [https://uat.moc.gov.kh/kh/news/2679](https://uat.moc.gov.kh/kh/news/2679), where the number of English paragraphs exceeds that of the Khmer version. To address this, I used `KhmerEnglishAligner` with the `sentence-transformers/LaBSE` model from Hugging Face to align the bilingual content accurately.
 
-### Solution
-
-To ensure the content remains aligned, a check was added to insert an empty string into the English list when the number of Khmer elements exceeds the number of English ones. This ensures both lists stay balanced and aligned properly during processing.
-
-**Relevant code (lines 238-246):**
-
-```python
-def extract_content(self, soup: BeautifulSoup) -> Dict[str, List[str]]:
-    # existing code ...
-
-    english_texts = content['english']
-    khmer_texts = content['khmer']
-
-    total_texts = len(english_texts) + len(khmer_texts)
-
-    # Check if the total number of responses is odd and khmer > english
-    if total_texts % 2 == 1 and len(khmer_texts) > len(english_texts):
-        # Insert empty string at index 0 in english_texts
-        english_texts.insert(0, "")
-```
-
-## Additional Handling for Title Extraction
-
-Some pages do not wrap the title inside an `<h2>` element; instead, the title is placed directly inside a `<div>`.  
-To address this inconsistency, the following logic was added to ensure the title is consistently captured:
-
-**Relevant code (lines 140–145):**
-
-```python
-def extract_content(self, soup: BeautifulSoup) -> Dict[str, List[str]]:
-    # existing code ...
-
-    if title_element is None:
-        # Check for <div> with class 'mobile-title-detail'
-        mobile_title_element = soup.select_one('div.mobile-title-detail')
-        if mobile_title_element:
-            title_text = self.clean_text(mobile_title_element.get_text(strip=True))
-            title_element = mobile_title_element
+In some cases, the similarity score slightly drops after merging paragraphs (by about **0.01**). If the drop is minor and still within an acceptable range, the merged result is retained to ensure alignment consistency.
