@@ -2,6 +2,7 @@ from urllib.parse import urlparse
 from typing import List, Dict, Optional
 from extract_link import extract_link  
 from models.db_models import ScrapedContent, Session
+from KhmerEnglishAligner import KhmerEnglishAligner
 from bs4 import BeautifulSoup
 import asyncio
 import aiohttp
@@ -9,6 +10,7 @@ import csv
 import re
 import time
 import logging
+
 
 # Set up logging for debugging and monitoring
 logging.basicConfig(
@@ -38,7 +40,7 @@ class MoCWebScraper:
         """
         self.delay = delay
         self.timeout = timeout
-        # self.session = requests.Session()
+        self.aligner = KhmerEnglishAligner()
         
         # Pre-compile regex patterns for better performance
         self.whitespace_pattern = re.compile(r'\s+')
@@ -137,12 +139,12 @@ class MoCWebScraper:
             if title_element:
                 title_text = self.clean_text(title_element.get_text(strip=True))
 
-            if title_element is None:
-                # Also check for div with class 'mobile-title-detail'
-                mobile_title_element = soup.select_one('div.mobile-title-detail')
-                if mobile_title_element:
-                    title_text = self.clean_text(mobile_title_element.get_text(strip=True))
-                    title_element = mobile_title_element
+            # if title_element is None:
+            #     # Also check for div with class 'mobile-title-detail'
+            #     mobile_title_element = soup.select_one('div.mobile-title-detail')
+            #     if mobile_title_element:
+            #         title_text = self.clean_text(mobile_title_element.get_text(strip=True))
+            #         title_element = mobile_title_element
             
             # Extract only paragraph blocks (avoid duplication)
             paragraph_blocks = soup.select('div.article-content div.page-description div[id="paragraphBlock"]')
@@ -237,22 +239,28 @@ class MoCWebScraper:
                             content['english'].append(text)
             
             logger.info(f"Final extraction: {len(content['english'])} English, {len(content['khmer'])} Khmer texts")
+
+            # Handle case where we have different numbers of English and Khmer texts
+            if content['english'] and content['khmer']:
+                content = self.align_texts(content['english'], content['khmer'])
             
         except Exception as e:
             logger.error(f"Error extracting content: {str(e)}")
-
-        english_texts = content['english']
-        khmer_texts = content['khmer']
-
-        total_texts = len(english_texts) + len(khmer_texts)
-
-        # Check if the total number of responses is odd and khmer > english
-        if total_texts % 2 == 1 and len(khmer_texts) > len(english_texts):
-            # Insert empty string at index 0 in english_texts
-            english_texts.insert(0, "")
             
         return content
-
+    
+    def align_texts(self, english_texts: List[str], khmer_texts: List[str]):
+        """
+        Aligns English and Khmer texts using KhmerEnglishAligner.
+        Returns a list of (ID, English_Text, Khmer_Text) tuples.
+        """
+        data = {
+            'english': english_texts,
+            'khmer': khmer_texts
+        }
+        
+        return self.aligner.align(data)
+    
     
     async def scrape_url(self, session: aiohttp.ClientSession, url: str) -> Optional[Dict[str, List[str]]]:
         """
