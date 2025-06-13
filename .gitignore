@@ -7,3 +7,6 @@ logs
 *.db
 .env
 *.json
+tests
+.pytest_cache
+.vscode
