@@ -5,10 +5,11 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.remote.webelement import WebElement
 from selenium.common.exceptions import TimeoutException, NoSuchElementException
-import time
-import logging
 from typing import List, Set, Optional
 from pathlib import Path
+import time
+import argparse
+import logging
 
 
 class NewsScraper:
@@ -32,7 +33,7 @@ class NewsScraper:
         logging.basicConfig(
             level=logging.INFO,
             format="%(asctime)s - %(levelname)s - %(message)s",
-            handlers=[logging.FileHandler("Dynamic.log"), logging.StreamHandler()],
+            handlers=[logging.FileHandler("logs/Dynamic.log"), logging.StreamHandler()],
         )
         self.logger = logging.getLogger(__name__)
 
@@ -204,10 +205,28 @@ class NewsScraper:
 
 
 def main() -> None:
+
+    # Add argument parser
+    parser = argparse.ArgumentParser(description="MoC News Scraper")
+    parser.add_argument(
+        "--headless", action="store_true", help="Run browser in headless mode (no GUI)"
+    )
+    parser.add_argument(
+        "--timeout", type=int, default=15, help="Timeout in seconds (default: 15)"
+    )
+    parser.add_argument(
+        "--category", type=int, default=2, help="News category to scrape (default: 2)"
+    )
+
+    # Parse arguments
+    args = parser.parse_args()
+
     # Use context manager for automatic cleanup
-    with NewsScraper(headless=False, timeout=15) as scraper:
+    with NewsScraper(
+        headless=args.headless, timeout=args.timeout, category=args.category
+    ) as scraper:
         try:
-            print("Starting scraping...")
+            print(f"Starting scraping... (Headless: {args.headless})")
             start_time: float = time.time()
 
             if not scraper.load_page():

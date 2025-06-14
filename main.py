@@ -13,6 +13,7 @@ import re
 import time
 from typing import Dict, List, Optional
 from urllib.parse import urlparse
+from pathlib import Path
 
 # Third-party imports (external packages)
 import aiohttp
@@ -28,7 +29,10 @@ from models.db_models import ScrapedContent, Session
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
-    handlers=[logging.FileHandler("scraper.log"), logging.StreamHandler()],
+    handlers=[
+        logging.FileHandler("logs/scraper.log", encoding="utf-8"),
+        logging.StreamHandler()
+    ],
 )
 logger = logging.getLogger(__name__)
 
@@ -70,6 +74,15 @@ class MoCWebScraper:
             "Accept-Encoding": "gzip, deflate",
             "Connection": "keep-alive",
         }
+
+        # Ensure directories exist
+        self._ensure_directories()
+
+    def _ensure_directories(self):
+        """Create necessary directories if they don't exist"""
+        Path("logs").mkdir(exist_ok=True)
+        Path("databases").mkdir(exist_ok=True)
+        Path("output").mkdir(exist_ok=True)
 
     def is_khmer_text(self, text: str) -> bool:
         """
@@ -438,7 +451,7 @@ class MoCWebScraper:
 
         return results
 
-    def save_to_csv(self, results: List[Dict], filename: str = "scraped_content.csv"):
+    def save_to_csv(self, results: List[Dict], filename: str = "output/scraped_content.csv"):
         """
         Save scraped results to CSV file with unique ID for each sentence pair
 
@@ -447,6 +460,10 @@ class MoCWebScraper:
             filename: Output CSV filename
         """
         try:
+            # Ensure output directory exists
+            output_path = Path(filename)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+
             with open(filename, "w", newline="", encoding="utf-8") as csvfile:
                 fieldnames = ["ID", "English_Text", "Khmer_Text"]
                 writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
@@ -617,14 +634,10 @@ async def main():
             scraper.save_to_db(results)
         else:
             # Save to CSV
-            filename = input(
-                "\nEnter output CSV filename (default: scraped_content.csv): "
-            ).strip()
-            if not filename:
-                filename = "scraped_content.csv"
-            if not filename.endswith(".csv"):
-                filename += ".csv"
-            scraper.save_to_csv(results, filename)
+            timestamp = time.strftime("%Y%m%d_%H%M%S")
+            csv_filename = f"output/scraped_content_{timestamp}.csv"
+            filename = csv_filename
+            scraper.save_to_csv(results, csv_filename)
 
         end_time = time.time()
         processing_time = end_time - start_time

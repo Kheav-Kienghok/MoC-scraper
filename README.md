@@ -1,4 +1,19 @@
-# MoC News Scraper
+<div align="center">
+
+![Python](https://img.shields.io/badge/Python-3.13-blue?style=for-the-badge&logo=python&logoColor=white)
+![Selenium](https://img.shields.io/badge/Selenium-43B02A?style=for-the-badge&logo=selenium&logoColor=white)
+![Chrome](https://img.shields.io/badge/Chrome-4285F4?style=for-the-badge&logo=googlechrome&logoColor=white)
+
+![Issues](https://img.shields.io/github/issues/Kheav-Kienghok/MoC-scraper?style=for-the-badge&color=red)
+![Status](https://img.shields.io/badge/Status-Active-brightgreen?style=for-the-badge)
+
+</div>
+
+---
+<div align="center">
+
+   <h1>🇰🇭 MoC News Scraper</h1>
+</div>
 
 A robust web scraping tool designed to extract and process bilingual (Khmer-English) news articles from the Ministry of Commerce of Cambodia website.
 
@@ -25,6 +40,55 @@ A robust web scraping tool designed to extract and process bilingual (Khmer-Engl
    ```bash
    python main.py
    ```
+
+## 🔗 **Link Extraction**
+
+If you have no links and want to scrape everything from `https://uat.moc.gov.kh/news?category=2` with infinite scroll functionality, use the following command:
+
+```bash
+# For comprehensive link extraction with infinite scroll
+python DynamicLinkScrapping.py --headless --timeout 30
+```
+
+> **Expected Output:** ~400 URL links from the website. If you get significantly fewer links, there may be an internet connection issue.
+
+## 🎛️ **Command Line Options**
+
+The scraper supports various command-line arguments for flexible configuration:
+
+### **Basic Usage**
+```bash
+# Run with default settings (GUI mode)
+python DynamicLinkScrapping.py
+
+# Run the complete pipeline
+python main.py
+```
+
+### **Available Arguments**
+
+| Argument | Type | Default | Description |
+|----------|------|---------|-------------|
+| `--headless` | Flag | `False` | Run browser in headless mode (no GUI) |
+| `--timeout` | Integer | `15` | Timeout in seconds for page loading |
+| `--category` | Integer | `2` | News category to scrape |
+| `--help` | Flag | - | Show help message and exit |
+
+### **Usage Examples**
+
+```bash
+# Run in headless mode (no browser window)
+python DynamicLinkScrapping.py --headless
+
+# Run with custom timeout and category
+python DynamicLinkScrapping.py --headless --timeout 20 --category 3
+
+# Run with GUI and extended timeout
+python DynamicLinkScrapping.py --timeout 30
+
+# Show all available options
+python DynamicLinkScrapping.py --help
+```
 
 ## 📋 Project Overview
 
