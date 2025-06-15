@@ -14,24 +14,19 @@ class KhmerEnglishAligner:
 
     Attributes:
         model (SentenceTransformer): The multilingual sentence transformer model.
-        acceptable_negative_diff (float): Minimum acceptable drop in similarity score when merging sentences.
     """
 
     def __init__(
         self,
         model_name: str = "sentence-transformers/LaBSE",
-        acceptable_negative_diff: float = -0.01,
     ):
         """
         Initialize the KhmerEnglishAligner.
 
         Args:
             model_name (str): Name of the sentence transformer model to load. Defaults to LaBSE.
-            acceptable_negative_diff (float): Minimum acceptable drop in similarity to allow a merge.
-                Negative values allow slight decreases in similarity. Defaults to -0.01.
         """
         self.model = SentenceTransformer(model_name)
-        self.acceptable_negative_diff = acceptable_negative_diff
 
     def _encode_sentences(self, sentences: List[str]) -> torch.Tensor:
         """
@@ -80,7 +75,8 @@ class KhmerEnglishAligner:
         used_english_indices: Set[int],
     ) -> Tuple[List[str], List[Tuple[int, int, float]]]:
         """
-        Attempt to merge unused English sentences with existing pairs to improve alignment.
+        Merge unused English sentences into existing aligned pairs by selecting
+        the best merge per pair based on score difference (positive or least negative).
 
         Args:
             pairs (List[Tuple[int, int, float]]): Initial sentence pairs.
@@ -96,25 +92,31 @@ class KhmerEnglishAligner:
             i for i in range(len(english_sentences)) if i not in used_english_indices
         ]
 
-        for unused_en_idx in unused_english_indices[:]:  # Copy for safe iteration
-            unused_text = english_sentences[unused_en_idx]
+        for pair_idx, (en_idx, km_idx, old_score) in enumerate(pairs):
+            best_candidate = None
+            best_diff = float("-inf")
+            best_text = merged_english_texts[pair_idx]
 
-            for pair_idx, (en_idx, km_idx, old_score) in enumerate(pairs):
-                existing_text = merged_english_texts[pair_idx]
-                merged_text = f"{existing_text} {unused_text}"
-
-                # Recompute merged embedding
-                merged_emb = self._encode_sentences([merged_text])[0]
+            for unused_en_idx in unused_english_indices:
+                candidate_text = (
+                    f"{merged_english_texts[pair_idx]} {english_sentences[unused_en_idx]}"
+                )
+                merged_emb = self._encode_sentences([candidate_text])[0]
                 km_emb = khmer_embeddings[km_idx]
                 new_score = util.pytorch_cos_sim(merged_emb, km_emb).item()
                 score_diff = new_score - old_score
 
-                if new_score > old_score or score_diff >= self.acceptable_negative_diff:
-                    merged_english_texts[pair_idx] = merged_text
-                    pairs[pair_idx] = (en_idx, km_idx, new_score)
-                    used_english_indices.add(unused_en_idx)
-                    unused_english_indices.remove(unused_en_idx)
-                    break
+                if score_diff > best_diff:
+                    best_diff = score_diff
+                    best_candidate = unused_en_idx
+                    best_text = candidate_text
+                    best_new_score = new_score
+
+            if best_candidate is not None:
+                merged_english_texts[pair_idx] = best_text
+                pairs[pair_idx] = (en_idx, km_idx, best_new_score)
+                used_english_indices.add(best_candidate)
+                unused_english_indices.remove(best_candidate)
 
         return merged_english_texts, pairs
 
