@@ -7,10 +7,12 @@ news articles from the Ministry of Commerce of Cambodia website.
 
 # Standard library imports (built-in Python modules)
 import asyncio
+import aiofiles
 import csv
 import logging
 import re
 import time
+import io
 from typing import Dict, List, Optional
 from urllib.parse import urlparse
 from pathlib import Path
@@ -18,6 +20,7 @@ from pathlib import Path
 # Third-party imports (external packages)
 import aiohttp
 from bs4 import BeautifulSoup
+from asyncio import Semaphore
 
 # Local application imports (your project modules)
 from extract_link import extract_link
@@ -31,7 +34,7 @@ logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s",
     handlers=[
         logging.FileHandler("logs/scraper.log", encoding="utf-8"),
-        logging.StreamHandler()
+        logging.StreamHandler(),
     ],
 )
 logger = logging.getLogger(__name__)
@@ -43,16 +46,32 @@ class MoCWebScraper:
     Extracts and separates English and Khmer content into structured CSV format
     """
 
-    def __init__(self, delay: float = 1.0, timeout: int = 30):
+    def __init__(
+        self,
+        delay: float = 1.0,
+        timeout: int = 30,
+        max_concurrent: int = 10,
+        max_retries: int = 3,
+        retry_delay: float = 2.0,
+    ):
         """
         Initialize the scraper with configuration and compile regex patterns
 
         Args:
             delay: Delay between requests to be respectful to the server
             timeout: Request timeout in seconds
+            max_concurrent: Maximum number of concurrent requests
+            max_retries: Maximum number of retry attempts for failed requests
+            retry_delay: Base delay between retry attempts (exponential backoff)
         """
         self.delay = delay
         self.timeout = timeout
+        self.max_concurrent = max_concurrent
+        self.max_retries = max_retries
+        self.retry_delay = retry_delay
+
+        self.semaphore = Semaphore(max_concurrent)
+
         self.special_characters = ["- - -", "---", "***", "* * *"]
         self.aligner = KhmerEnglishAligner()
 
@@ -83,6 +102,51 @@ class MoCWebScraper:
         Path("logs").mkdir(exist_ok=True)
         Path("databases").mkdir(exist_ok=True)
         Path("output").mkdir(exist_ok=True)
+
+    async def _retry_with_backoff(self, func, *args, **kwargs):
+        """
+        Retry a function with exponential backoff
+
+        Args:
+            func: The async function to retry
+            *args: Arguments to pass to the function
+            **kwargs: Keyword arguments to pass to the function
+
+        Returns:
+            Result of the function or None if all retries failed
+        """
+        last_exception = None
+
+        for attempt in range(self.max_retries + 1):  # +1 for initial attempt
+            try:
+                if attempt > 0:
+                    # Calculate exponential backoff delay
+                    delay = self.retry_delay * (2 ** (attempt - 1))
+                    logger.info(
+                        f"Retrying in {delay:.1f} seconds (attempt {attempt + 1}/{self.max_retries + 1})"
+                    )
+                    await asyncio.sleep(delay)
+
+                return await func(*args, **kwargs)
+
+            except (
+                aiohttp.ClientError,
+                asyncio.TimeoutError,
+                aiohttp.ServerTimeoutError,
+            ) as e:
+                last_exception = e
+                if attempt < self.max_retries:
+                    logger.warning(f"Attempt {attempt + 1} failed: {str(e)}")
+                else:
+                    logger.error(
+                        f"All {self.max_retries + 1} attempts failed. Last error: {str(e)}"
+                    )
+            except Exception as e:
+                # For non-network errors, don't retry
+                logger.error(f"Non-retryable error: {str(e)}")
+                return None
+
+        return None
 
     def is_khmer_text(self, text: str) -> bool:
         """
@@ -269,7 +333,7 @@ class MoCWebScraper:
                     logger.info(
                         f"Final extraction: {len(content['english'])} English, {len(content['khmer'])} Khmer texts"
                     )
-                    
+
                     return content
 
             else:
@@ -326,52 +390,76 @@ class MoCWebScraper:
 
         return self.aligner.align(data)
 
+    async def _scrape_url_internal(
+        self, session: aiohttp.ClientSession, url: str
+    ) -> Optional[Dict[str, List[str]]]:
+        """
+        Internal method to scrape URL without retry logic
+        """
+        logger.info(f"Scraping URL: {url}")
+
+        # Create timeout for this specific request
+        timeout = aiohttp.ClientTimeout(total=self.timeout)
+
+        async with session.get(url, timeout=timeout) as response:
+            if response.status != 200:
+                logger.warning(f"URL {url} returned status {response.status}")
+                return None
+
+            # Check if we got HTML content
+            content_type = response.headers.get("content-type", "").lower()
+            if "html" not in content_type:
+                logger.warning(f"URL {url} does not return HTML content")
+                return None
+
+            html = await response.text()
+
+            # Parse HTML with optimized parser
+            soup = BeautifulSoup(html, "html.parser")
+
+            # Extract content using optimized method
+            content = self.extract_content(soup)
+            logger.info(
+                f"Extracted {len(content['english'])} English and {len(content['khmer'])} Khmer texts"
+            )
+
+            await asyncio.sleep(self.delay)
+
+            return content
+
+    async def scrape_url_with_semaphore(
+        self, session: aiohttp.ClientSession, url: str
+    ) -> Optional[Dict[str, List[str]]]:
+        """
+        Scrape URL with semaphore to limit concurrent requests
+        """
+        async with self.semaphore:
+            return await self.scrape_url(session, url)
+
     async def scrape_url(
         self, session: aiohttp.ClientSession, url: str
     ) -> Optional[Dict[str, List[str]]]:
         """
-        Scrape content from a single URL with optimized processing
+        Scrape content from a single URL with retry mechanism
 
         Args:
+            session: aiohttp ClientSession
             url: URL to scrape
 
         Returns:
             Dictionary with extracted content or None if failed
         """
 
-        try:
-            logger.info(f"Scraping URL: {url}")
+        result = await self._retry_with_backoff(self._scrape_url_internal, session, url)
 
-            async with session.get(url, timeout=self.timeout) as response:
+        # If all retries failed, make sure it's logged
+        if result is None:
+            logger.error(f"URL {url} failed after {self.max_retries} retries")
+        else:
+            logger.info(f"URL {url} scraped successfully")
+        
 
-                if response.status != 200:
-                    logger.warning(f"URL {url} returned status {response.status}")
-                    return None
-
-                # Check if we got HTML content
-                content_type = response.headers.get("content-type", "").lower()
-                if "html" not in content_type:
-                    logger.warning(f"URL {url} does not return HTML content")
-                    return None
-
-                html = await response.text()
-
-                # Parse HTML with optimized parser
-                soup = BeautifulSoup(html, "html.parser")
-
-                # Extract content using optimized method
-                content = self.extract_content(soup)
-                logger.info(
-                    f"Extracted {len(content['english'])} English and {len(content['khmer'])} Khmer texts"
-                )
-
-                await asyncio.sleep(self.delay)
-
-                return content
-
-        except Exception as e:
-            logger.error(f"Unexpected error scraping {url}: {str(e)}")
-            return None
+        return result
 
     def validate_url(self, url: str) -> bool:
         """
@@ -399,6 +487,111 @@ class MoCWebScraper:
 
         except Exception:
             return False
+
+    async def scrape_multiple_urls_batched(
+        self, urls: List[str], batch_size: int = 50
+    ) -> List[Dict]:
+        """
+        Scrape URLs in batches to prevent memory issues and rate limiting
+        """
+        results = []
+        total_batches = (len(urls) + batch_size - 1) // batch_size
+
+        # Configure connection limits
+        connector = aiohttp.TCPConnector(
+            limit=100,  # Total connection pool size
+            limit_per_host=10,  # Connections per host
+            ttl_dns_cache=300,  # DNS cache TTL
+            use_dns_cache=True,
+        )
+
+        timeout = aiohttp.ClientTimeout(
+            total=60,  # Total timeout
+            connect=10,  # Connection timeout
+            sock_read=30,  # Socket read timeout
+        )
+
+        async with aiohttp.ClientSession(
+            headers=self.headers, connector=connector, timeout=timeout
+        ) as session:
+
+            for batch_num in range(total_batches):
+                start_idx = batch_num * batch_size
+                end_idx = min(start_idx + batch_size, len(urls))
+                batch_urls = urls[start_idx:end_idx]
+
+                logger.info(
+                    f"Processing batch {batch_num + 1}/{total_batches} ({len(batch_urls)} URLs)"
+                )
+
+                # Process batch with semaphore
+                tasks = []
+                for url in batch_urls:
+                    if not self.validate_url(url):
+                        logger.error(f"Invalid URL: {url}")
+                        results.append(
+                            {
+                                "id": start_idx + len(tasks) + 1,
+                                "url": url,
+                                "english_texts": [],
+                                "khmer_texts": [],
+                            }
+                        )
+                        continue
+
+                    tasks.append(self.scrape_url_with_semaphore(session, url))
+
+                try:
+                    # Process batch with timeout
+                    batch_results = await asyncio.wait_for(
+                        asyncio.gather(*tasks, return_exceptions=True),
+                        timeout=300,  # 5 minutes per batch
+                    )
+
+                    # Process results
+                    task_idx = 0
+                    for i, url in enumerate(batch_urls):
+                        if not self.validate_url(url):
+                            continue
+
+                        result = batch_results[task_idx]
+                        task_idx += 1
+
+                        if isinstance(result, Exception):
+                            logger.error(f"Error processing {url}: {result}")
+                            content = {"english": [], "khmer": []}
+                        elif result is None:
+                            content = {"english": [], "khmer": []}
+                        else:
+                            content = result
+
+                        results.append(
+                            {
+                                "id": start_idx + i + 1,
+                                "url": url,
+                                "english_texts": content["english"],
+                                "khmer_texts": content["khmer"],
+                            }
+                        )
+
+                except asyncio.TimeoutError:
+                    logger.error(f"Batch {batch_num + 1} timed out")
+                    # Add empty results for failed batch
+                    for i, url in enumerate(batch_urls):
+                        results.append(
+                            {
+                                "id": start_idx + i + 1,
+                                "url": url,
+                                "english_texts": [],
+                                "khmer_texts": [],
+                            }
+                        )
+
+                # Add delay between batches
+                if batch_num < total_batches - 1:
+                    await asyncio.sleep(self.delay * 2)
+
+        return results
 
     async def scrape_multiple_urls(self, urls: List[str]) -> List[Dict]:
         """
@@ -451,7 +644,9 @@ class MoCWebScraper:
 
         return results
 
-    def save_to_csv(self, results: List[Dict], filename: str = "output/scraped_content.csv"):
+    async def save_to_csv(
+        self, results: List[Dict], filename: str = "output/scraped_content.csv"
+    ):
         """
         Save scraped results to CSV file with unique ID for each sentence pair
 
@@ -464,45 +659,55 @@ class MoCWebScraper:
             output_path = Path(filename)
             output_path.parent.mkdir(parents=True, exist_ok=True)
 
-            with open(filename, "w", newline="", encoding="utf-8") as csvfile:
-                fieldnames = ["ID", "English_Text", "Khmer_Text"]
-                writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+            # Create CSV content in memory first
+            buffer = io.StringIO()
+            fieldnames = ["ID", "English_Text", "Khmer_Text"]
+            writer = csv.DictWriter(buffer, fieldnames=fieldnames)
 
-                # Write header
-                writer.writeheader()
+            # Write header
+            writer.writeheader()
 
-                # Initialize global row counter for unique IDs
-                row_id = 1
-                # Process each result
-                for result in results:
-                    english_texts = result["english_texts"]
-                    khmer_texts = result["khmer_texts"]
+            # Initialize global row counter for unique IDs
+            row_id = 1
+            # Process each result
+            for result in results:
+                english_texts = result["english_texts"]
+                khmer_texts = result["khmer_texts"]
 
-                    # Handle the case where we have different numbers of English and Khmer texts
-                    max_texts = max(len(english_texts), len(khmer_texts))
+                # Handle the case where we have different numbers of English and Khmer texts
+                max_texts = max(len(english_texts), len(khmer_texts))
 
-                    if max_texts == 0:
-                        # No content found - still assign an ID
+                if max_texts == 0:
+                    # No content found - still assign an ID
+                    writer.writerow(
+                        {"ID": row_id, "English_Text": "", "Khmer_Text": ""}
+                    )
+                    row_id += 1
+                else:
+                    # Write each text pair with unique ID
+                    for i in range(max_texts):
+                        english_text = (
+                            english_texts[i] if i < len(english_texts) else ""
+                        )
+                        khmer_text = khmer_texts[i] if i < len(khmer_texts) else ""
+
                         writer.writerow(
-                            {"ID": row_id, "English_Text": "", "Khmer_Text": ""}
+                            {
+                                "ID": row_id,
+                                "English_Text": english_text,
+                                "Khmer_Text": khmer_text,
+                            }
                         )
                         row_id += 1
-                    else:
-                        # Write each text pair with unique ID
-                        for i in range(max_texts):
-                            english_text = (
-                                english_texts[i] if i < len(english_texts) else ""
-                            )
-                            khmer_text = khmer_texts[i] if i < len(khmer_texts) else ""
 
-                            writer.writerow(
-                                {
-                                    "ID": row_id,
-                                    "English_Text": english_text,
-                                    "Khmer_Text": khmer_text,
-                                }
-                            )
-                            row_id += 1
+            # Write all content to file at once
+            csv_content = buffer.getvalue()
+            buffer.close()
+
+            async with aiofiles.open(
+                filename, "w", newline="", encoding="utf-8"
+            ) as csvfile:
+                await csvfile.write(csv_content)
 
             logger.info(f"Results saved to {filename}")
 
@@ -608,6 +813,16 @@ async def main():
         print(f"\nWill scrape {len(urls)} URL(s):")
         for i, url in enumerate(urls, 1):
             print(f"  {i}. {url}")
+        if len(urls) > 100:
+            print(f"  ... and {len(urls) - 100} more URLs")
+
+        # Ask for batch size if many URLs
+        batch_size = 50
+        if len(urls) > 100:
+            print(f"\nLarge number of URLs detected ({len(urls)})")
+            batch_input = input(f"Enter batch size (default: {batch_size}): ").strip()
+            if batch_input.isdigit():
+                batch_size = int(batch_input)
 
         # Ask user where to save results
         print("=" * 50)
@@ -620,13 +835,16 @@ async def main():
 
         # Initialize optimized scraper
         print("\nInitializing optimized scraper...")
-        scraper = MoCWebScraper(delay=1.0, timeout=30)
+        scraper = MoCWebScraper(delay=1.0, timeout=30, max_concurrent=10)
 
-        print(f"Starting scraping process...")
+        print(f"Starting scraping process with batch size {batch_size}...")
         start_time = time.time()
 
-        # Scrape all URLs
-        results = await scraper.scrape_multiple_urls(urls)
+        # Use batched scraping for large URL lists
+        if len(urls) > 50:
+            results = await scraper.scrape_multiple_urls_batched(urls, batch_size)
+        else:
+            results = await scraper.scrape_multiple_urls(urls)
 
         if save_choice == "2":
             # Save to database
@@ -637,7 +855,7 @@ async def main():
             timestamp = time.strftime("%Y%m%d_%H%M%S")
             csv_filename = f"output/scraped_content_{timestamp}.csv"
             filename = csv_filename
-            scraper.save_to_csv(results, csv_filename)
+            await scraper.save_to_csv(results, csv_filename)
 
         end_time = time.time()
         processing_time = end_time - start_time
