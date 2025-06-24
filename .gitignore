@@ -1,0 +1,12 @@
+venv
+__pycache__
+*.log
+*.csv
+*.txt
+logs
+*.db
+.env
+*.json
+tests
+.pytest_cache
+.vscode
