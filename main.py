@@ -110,9 +110,11 @@ class MoFAWebScraper:
             ):
                 element.decompose()
 
-            # Extract all heading elements (h1, h2, h3, h4) as titles
-            heading_selectors = ["h4"]
+            # Extract all heading elements (h4, h5) as titles
+            heading_selectors = ["h4", "h5"]
             all_texts = []
+            list_item_texts = set()  # Track which texts come from list items
+            h5_texts = set()  # Track which texts come from h5 elements (should not be joined)
 
             for selector in heading_selectors:
                 headings = soup.select(selector)
@@ -120,10 +122,42 @@ class MoFAWebScraper:
                 for heading in headings:
                     heading_text = self.clean_text(heading.get_text(strip=True))
                     if heading_text and len(heading_text) >= 3:
-                        all_texts.append(heading_text)            # Extract content from p elements
+                        # Skip symbol-only text
+                        if self.is_symbol_only_text(heading_text):
+                            logger.info(f"Skipping symbol-only heading: {heading_text}")
+                            continue
+                        all_texts.append(heading_text)
+                        # Mark h5 texts to prevent joining
+                        if selector == "h5":
+                            h5_texts.add(heading_text)
+
+            # Also extract h5 elements specifically from card containers
+            card_selectors = [
+                "div.card h5",  # h5 inside div with class 'card'
+                "div[class*='card'] h5",  # h5 inside div with 'card' in class name
+                ".card h5",  # h5 inside any element with 'card' class
+                "[class*='card'] h5",  # h5 inside any element with 'card' in class name
+            ]
+            
+            logger.info("Extracting h5 elements from card containers...")
+            for selector in card_selectors:
+                card_headings = soup.select(selector)
+                
+                for heading in card_headings:
+                    heading_text = self.clean_text(heading.get_text(strip=True))
+                    if heading_text and len(heading_text) >= 3:
+                        # Skip symbol-only text
+                        if self.is_symbol_only_text(heading_text):
+                            continue
+                        # Avoid duplicates
+                        if heading_text not in all_texts:
+                            all_texts.append(heading_text)
+                            h5_texts.add(heading_text)  # Mark as h5 text to prevent joining
+
+            # Extract content from p elements and span elements
             content_selectors = [
                 "div.post-content p",  # All <p> elements inside <div class="post-content">
-                "span:not(.header-title-en):not(.header-title-km)"  # All span elements except header titles
+                "span:not(.header-title-en):not(.header-title-km)",  # All span elements except header titles
             ]
 
             # Process each selector type
@@ -138,42 +172,117 @@ class MoFAWebScraper:
                     )
 
                 for element in elements:
-
                     # Get text content
                     text = element.get_text(strip=True)
 
                     if text:
                         cleaned_text = self.clean_text(text)
-                        if cleaned_text and len(cleaned_text) >= 3:                            # Avoid duplicates
+                        if cleaned_text and len(cleaned_text) >= 3:
+                            # Skip symbol-only text
+                            if self.is_symbol_only_text(cleaned_text):
+                                logger.info(f"Skipping symbol-only text: {cleaned_text}")
+                                continue
+                            # Avoid duplicates
                             if cleaned_text not in all_texts:
                                 all_texts.append(cleaned_text)
 
+            # Extract content from card structures
+            card_content_selectors = [
+                "div.card p",  # p elements inside card divs
+                "div[class*='card'] p",  # p elements inside divs with 'card' in class name
+                ".card p",  # p elements inside any element with 'card' class
+                "[class*='card'] p",  # p elements inside any element with 'card' in class name
+                "div.card div",  # div elements inside card divs
+                "div[class*='card'] div",  # div elements inside divs with 'card' in class name
+            ]
+            
+            logger.info("Extracting content from card structures...")
+            for selector in card_content_selectors:
+                card_elements = soup.select(selector)
+                
+                for element in card_elements:
+                    # Get text content
+                    text = element.get_text(strip=True)
+
+                    if text:
+                        cleaned_text = self.clean_text(text)
+                        if cleaned_text and len(cleaned_text) >= 3:
+                            # Skip symbol-only text
+                            if self.is_symbol_only_text(cleaned_text):
+                                logger.info(f"Skipping symbol-only card text: {cleaned_text}")
+                                continue
+                            # Avoid duplicates
+                            if cleaned_text not in all_texts:
+                                all_texts.append(cleaned_text)
+                                logger.info(f"Added card content: {cleaned_text[:50]}...")
+
+            # Extract ordered lists and their list items separately
+            ordered_lists = soup.select("ol")
+            logger.info(f"Found {len(ordered_lists)} ordered lists")
+            
+            for ol in ordered_lists:
+                # Get all list items in this ordered list
+                list_items = ol.find_all("li", recursive=False)  # Only direct children
+                logger.info(f"Processing ordered list with {len(list_items)} items")
+                
+                for li in list_items:
+                    # Get text content of each list item
+                    li_text = li.get_text(strip=True)
+                    
+                    if li_text:
+                        cleaned_li_text = self.clean_text(li_text)
+                        if cleaned_li_text and len(cleaned_li_text) >= 3:
+                            # Skip symbol-only text
+                            if self.is_symbol_only_text(cleaned_li_text):
+                                logger.info(f"Skipping symbol-only list item: {cleaned_li_text}")
+                                continue
+                            # Avoid duplicates
+                            if cleaned_li_text not in all_texts:
+                                all_texts.append(cleaned_li_text)
+                                list_item_texts.add(cleaned_li_text)  # Mark as list item text
+
             logger.info(f"Total extracted texts: {len(all_texts)}")
             
-            # Separate content by language detection instead of just language setting
+            # Separate content by language detection with strict language filtering for h5 elements
             english_texts = []
             khmer_texts = []
             
             for text in all_texts:
                 lang = self.detect_language(text)
-                if lang == 'khmer':
-                    khmer_texts.append(text)
-                elif lang == 'english':
-                    english_texts.append(text)
-                else:  # mixed content
-                    # For mixed content, add to both if scraping mode allows
-                    if self.language == "3":  # Khmer mode - prefer Khmer
-                        khmer_texts.append(text)
-                    else:  # English mode - prefer English
+                is_h5_text = text in h5_texts
+                
+                if self.language == "1":  # English mode
+                    if lang == 'english':
                         english_texts.append(text)
+                    elif lang == 'khmer':
+                        # If scraping in English mode but h5 text is Khmer, return empty string
+                        if is_h5_text:
+                            english_texts.append("")
+                        else:
+                            english_texts.append(text)  # Non-h5 Khmer text still added
+                    else:  # mixed content - prefer English in English mode
+                        english_texts.append(text)
+                        
+                elif self.language == "3":  # Khmer mode
+                    if lang == 'khmer':
+                        khmer_texts.append(text)
+                    elif lang == 'english':
+                        # If scraping in Khmer mode but h5 text is English, return empty string
+                        if is_h5_text:
+                            khmer_texts.append("")
+                        else:
+                            khmer_texts.append(text)  # Non-h5 English text still added
+                    else:  # mixed content - prefer Khmer in Khmer mode
+                        khmer_texts.append(text)
             
             # Join Khmer sentences properly if we have Khmer content
             if khmer_texts:
-                joined_khmer = self.join_khmer_sentences(khmer_texts)
+                joined_khmer = self.join_khmer_sentences(khmer_texts, list_item_texts, h5_texts)
                 content["khmer"] = joined_khmer
             else:
                 content["khmer"] = []
                 
+            # Assign English content
             content["english"] = english_texts
 
             logger.info(
@@ -394,51 +503,65 @@ class MoFAWebScraper:
             logger.error(f"Error saving combined CSV: {str(e)}")
             raise
 
-    def join_khmer_sentences(self, data: List[str]) -> List[str]:
+    def join_khmer_sentences(self, data: List[str], list_item_texts: set = None, h5_texts: set = None) -> List[str]:
         """
         Join Khmer sentence fragments that are split across multiple elements.
         Khmer sentences typically end with "។" character.
         Only processes text that contains Khmer characters.
+        If text is from a list item or h5 element, it won't be joined with other sentences.
 
         Args:
             data: List of text fragments
+            list_item_texts: Set of texts that come from list items (should not be joined)
+            h5_texts: Set of texts that come from h5 elements (should not be joined)
 
         Returns:
             List of properly joined Khmer sentences
         """
-        # Filter to only include text with Khmer characters
-        khmer_texts = [text for text in data if self.detect_language(text) == 'khmer']
+        if list_item_texts is None:
+            list_item_texts = set()
+        if h5_texts is None:
+            h5_texts = set()
+            
+        # Filter to only include text with Khmer characters AND not empty strings
+        khmer_texts = [text for text in data if text and self.detect_language(text) == 'khmer']
         
-        if not khmer_texts:
-            return []
-        
-        # Check if there are any Khmer sentence endings in the data
-        has_khmer_endings = any("។" in item for item in khmer_texts)
-        
-        # If no Khmer sentence endings found, return data as-is
-        if not has_khmer_endings:
-            return khmer_texts
-        
+        # Keep track of original order including empty strings
         result = []
         temp = ""
-
-        # Skip the first element (topic/title) and process the rest
-        items_to_process = khmer_texts[1:] if len(khmer_texts) > 1 else []
         
-        # Add the first element (topic) as is if it exists
-        if len(khmer_texts) > 0:
-            result.append(khmer_texts[0])
-
-        for item in items_to_process:
-            item = item.strip()
-            if not item.endswith("។"):
-                temp += item + " "
+        for text in data:
+            # If it's an empty string, add it as-is
+            if not text:
+                # If we have accumulated text, add it first
+                if temp:
+                    result.append(temp.strip())
+                    temp = ""
+                result.append("")
+                continue
+                
+            # Skip non-Khmer text
+            if self.detect_language(text) != 'khmer':
+                continue
+                
+            # If this text is from a list item or h5 element, don't join it - add it as-is
+            if text in list_item_texts or text in h5_texts:
+                # If we have accumulated text, add it first
+                if temp:
+                    result.append(temp.strip())
+                    temp = ""
+                result.append(text)
+                continue
+            
+            # Regular sentence joining logic for non-list items and non-h5 items
+            if not text.endswith("។"):
+                temp += text + " "
             else:
                 if temp:
-                    result.append(temp + item)
+                    result.append(temp + text)
                     temp = ""
                 else:
-                    result.append(item)
+                    result.append(text)
                     
         # If temp has leftover sentence parts
         if temp:
@@ -480,6 +603,59 @@ class MoFAWebScraper:
             return 'english'
         else:
             return 'mixed'
+
+    def is_symbol_only_text(self, text: str) -> bool:
+        """
+        Check if text consists only of symbols/punctuation and should be skipped
+        
+        Args:
+            text: Text to check
+            
+        Returns:
+            True if text should be skipped (only symbols), False otherwise
+        """
+        if not text:
+            return True
+            
+        # Remove whitespace for analysis
+        clean_text = text.strip()
+        if not clean_text:
+            return True
+            
+        # Check if text consists only of repeated symbols
+        # Common patterns: *****, -----, ....., =====, etc.
+        symbol_patterns = [
+            r'^[*]{3,}$',       # Multiple asterisks
+            r'^[-]{3,}$',       # Multiple dashes
+            r'^[.]{3,}$',       # Multiple dots
+            r'^[=]{3,}$',       # Multiple equals
+            r'^[_]{3,}$',       # Multiple underscores
+            r'^[#]{3,}$',       # Multiple hash
+            r'^[+]{3,}$',       # Multiple plus
+            r'^[~]{3,}$',       # Multiple tilde
+            r'^[!]{3,}$',       # Multiple exclamation
+            r'^[@]{3,}$',       # Multiple at symbols
+            r'^[%]{3,}$',       # Multiple percent
+            r'^[&]{3,}$',       # Multiple ampersand
+            r'^[\|]{3,}$',      # Multiple pipes
+            r'^[\\]{3,}$',      # Multiple backslashes
+            r'^[/]{3,}$',       # Multiple forward slashes
+        ]
+        
+        # Check against symbol patterns
+        for pattern in symbol_patterns:
+            if re.match(pattern, clean_text):
+                return True
+                
+        # Check if text contains only punctuation and symbols (no letters or numbers)
+        # Remove spaces and check if remaining characters are only punctuation
+        no_space_text = clean_text.replace(' ', '')
+        if no_space_text and all(not char.isalnum() for char in no_space_text):
+            # If it's short (less than 10 chars) and all symbols, skip it
+            if len(no_space_text) < 10:
+                return True
+                
+        return False
 
 def get_urls_from_user() -> List[str]:
     """

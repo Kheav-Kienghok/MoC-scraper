@@ -1,0 +1,8 @@
+venv
+output/
+*.log
+*.csv
+*.txt
+__pycache__
+MoFA/
+testing.py
