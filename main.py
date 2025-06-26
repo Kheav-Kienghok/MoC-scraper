@@ -18,15 +18,6 @@ logging.basicConfig(
         logging.FileHandler("scraper.log", encoding="utf-8"),
     ],
 )
-
-# Set the console handler to use UTF-8 encoding
-for handler in logging.getLogger().handlers:
-    if isinstance(handler, logging.StreamHandler):
-        handler.stream = open(
-            sys.stdout.fileno(), mode="w", encoding="utf-8", buffering=1
-        )
-        break
-
 logger = logging.getLogger(__name__)
 
 
@@ -115,11 +106,17 @@ class MoFAWebScraper:
             all_texts = []
             list_item_texts = set()  # Track which texts come from list items
             h5_texts = set()  # Track which texts come from h5 elements (should not be joined)
+            span_texts = set()  # Track which texts come from span elements (should not be joined)
+            post_content_p_texts = set()  # Track which texts come from post-content p elements (can be joined)
 
             for selector in heading_selectors:
                 headings = soup.select(selector)
 
                 for heading in headings:
+                    # Skip any heading elements that contain span elements
+                    if heading.find("span"):
+                        continue
+                        
                     heading_text = self.clean_text(heading.get_text(strip=True))
                     if heading_text and len(heading_text) >= 3:
                         # Skip symbol-only text
@@ -144,6 +141,11 @@ class MoFAWebScraper:
                 card_headings = soup.select(selector)
                 
                 for heading in card_headings:
+                    # Skip h5 elements that contain span elements
+                    if heading.find("span"):
+                        logger.info(f"Skipping card h5 element with span: {heading.get_text(strip=True)[:50]}...")
+                        continue
+                        
                     heading_text = self.clean_text(heading.get_text(strip=True))
                     if heading_text and len(heading_text) >= 3:
                         # Skip symbol-only text
@@ -157,7 +159,10 @@ class MoFAWebScraper:
             # Extract content from p elements and span elements
             content_selectors = [
                 "div.post-content p",  # All <p> elements inside <div class="post-content">
-                "span:not(.header-title-en):not(.header-title-km)",  # All span elements except header titles
+                "span:not(.header-title-en):not(.header-title-km):not(.date):not(.header-title)",  # All span elements except header titles
+                "div.header-title.p",
+                "div.content-header.p",
+                "div.card-body.span" 
             ]
 
             # Process each selector type
@@ -185,6 +190,12 @@ class MoFAWebScraper:
                             # Avoid duplicates
                             if cleaned_text not in all_texts:
                                 all_texts.append(cleaned_text)
+                                # Mark span-derived texts to prevent joining
+                                if "span:" in selector:
+                                    span_texts.add(cleaned_text)
+                                # Mark post-content p texts to allow joining
+                                elif "div.post-content p" in selector:
+                                    post_content_p_texts.add(cleaned_text)
 
             # Extract content from card structures
             card_content_selectors = [
@@ -250,16 +261,17 @@ class MoFAWebScraper:
             for text in all_texts:
                 lang = self.detect_language(text)
                 is_h5_text = text in h5_texts
+                is_span_text = text in span_texts
                 
                 if self.language == "1":  # English mode
                     if lang == 'english':
                         english_texts.append(text)
                     elif lang == 'khmer':
-                        # If scraping in English mode but h5 text is Khmer, return empty string
-                        if is_h5_text:
+                        # If scraping in English mode but h5 or span text is Khmer, return empty string
+                        if is_h5_text or is_span_text:
                             english_texts.append("")
                         else:
-                            english_texts.append(text)  # Non-h5 Khmer text still added
+                            english_texts.append(text)  # Non-h5/span Khmer text still added
                     else:  # mixed content - prefer English in English mode
                         english_texts.append(text)
                         
@@ -267,23 +279,28 @@ class MoFAWebScraper:
                     if lang == 'khmer':
                         khmer_texts.append(text)
                     elif lang == 'english':
-                        # If scraping in Khmer mode but h5 text is English, return empty string
-                        if is_h5_text:
+                        # If scraping in Khmer mode but h5 or span text is English, return empty string
+                        if is_h5_text or is_span_text:
                             khmer_texts.append("")
                         else:
-                            khmer_texts.append(text)  # Non-h5 English text still added
+                            khmer_texts.append(text)  # Non-h5/span English text still added
                     else:  # mixed content - prefer Khmer in Khmer mode
                         khmer_texts.append(text)
             
             # Join Khmer sentences properly if we have Khmer content
             if khmer_texts:
-                joined_khmer = self.join_khmer_sentences(khmer_texts, list_item_texts, h5_texts)
+                joined_khmer = self.join_khmer_sentences(khmer_texts, list_item_texts, h5_texts, span_texts, post_content_p_texts)
                 content["khmer"] = joined_khmer
             else:
                 content["khmer"] = []
                 
             # Assign English content
             content["english"] = english_texts
+
+            # Log error if English and Khmer text counts don't match
+            if len(english_texts) != len(content["khmer"]):
+                logger.error(f"Text count mismatch - English: {len(english_texts)}, Khmer: {len(content['khmer'])}")
+                logger.error(f"This may indicate content alignment issues in the extracted data")
 
             logger.info(
                 f"Final extraction: {len(content['english'])} English, {len(content['khmer'])} Khmer texts"
@@ -329,6 +346,12 @@ class MoFAWebScraper:
 
                 # Extract content using optimized method
                 content = self.extract_content(soup)
+
+                # Log additional details if there's a mismatch
+                if len(content['english']) != len(content['khmer']):
+                    logger.error(f"URL {url} has mismatched content counts:")
+                    logger.error(f"  English texts: {len(content['english'])}")
+                    logger.error(f"  Khmer texts: {len(content['khmer'])}")
 
                 logger.info(
                     f"Extracted {len(content['english'])} English and {len(content['khmer'])} Khmer texts"
@@ -503,17 +526,19 @@ class MoFAWebScraper:
             logger.error(f"Error saving combined CSV: {str(e)}")
             raise
 
-    def join_khmer_sentences(self, data: List[str], list_item_texts: set = None, h5_texts: set = None) -> List[str]:
+    def join_khmer_sentences(self, data: List[str], list_item_texts: set = None, h5_texts: set = None, span_texts: set = None, post_content_p_texts: set = None) -> List[str]:
         """
         Join Khmer sentence fragments that are split across multiple elements.
         Khmer sentences typically end with "។" character.
         Only processes text that contains Khmer characters.
-        If text is from a list item or h5 element, it won't be joined with other sentences.
+        Only applies joining to text from div.post-content p elements.
 
         Args:
             data: List of text fragments
             list_item_texts: Set of texts that come from list items (should not be joined)
             h5_texts: Set of texts that come from h5 elements (should not be joined)
+            span_texts: Set of texts that come from span elements (should not be joined)
+            post_content_p_texts: Set of texts that come from post-content p elements (can be joined)
 
         Returns:
             List of properly joined Khmer sentences
@@ -522,6 +547,10 @@ class MoFAWebScraper:
             list_item_texts = set()
         if h5_texts is None:
             h5_texts = set()
+        if span_texts is None:
+            span_texts = set()
+        if post_content_p_texts is None:
+            post_content_p_texts = set()
             
         # Filter to only include text with Khmer characters AND not empty strings
         khmer_texts = [text for text in data if text and self.detect_language(text) == 'khmer']
@@ -544,8 +573,9 @@ class MoFAWebScraper:
             if self.detect_language(text) != 'khmer':
                 continue
                 
-            # If this text is from a list item or h5 element, don't join it - add it as-is
-            if text in list_item_texts or text in h5_texts:
+            # Only apply joining logic to post-content p texts
+            # All other texts (list items, h5, span, card content, etc.) are added as-is
+            if text not in post_content_p_texts:
                 # If we have accumulated text, add it first
                 if temp:
                     result.append(temp.strip())
@@ -553,7 +583,7 @@ class MoFAWebScraper:
                 result.append(text)
                 continue
             
-            # Regular sentence joining logic for non-list items and non-h5 items
+            # Regular sentence joining logic ONLY for post-content p elements
             if not text.endswith("។"):
                 temp += text + " "
             else:
