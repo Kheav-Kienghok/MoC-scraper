@@ -134,6 +134,7 @@ class MoFAWebScraper:
                 "div[class*='card'] h5",  # h5 inside div with 'card' in class name
                 ".card h5",  # h5 inside any element with 'card' class
                 "[class*='card'] h5",  # h5 inside any element with 'card' in class name
+                "h6.card-title.description"
             ]
             
             logger.info("Extracting h5 elements from card containers...")
@@ -162,10 +163,16 @@ class MoFAWebScraper:
                 "span:not(.header-title-en):not(.header-title-km):not(.date):not(.header-title)",  # All span elements except header titles
                 "div.header-title.p",
                 "div.content-header.p",
-                "div.card-body.span" 
+                "div.card-body.span",
+                "p.header-title",
+                "p.description",
+                "div.newDescription p"
             ]
 
             # Process each selector type
+            # Track texts from div.newDescription p for special duplicate handling
+            new_description_p_texts = []
+            
             for selector in content_selectors:
                 elements = soup.select(selector)
 
@@ -187,15 +194,31 @@ class MoFAWebScraper:
                             if self.is_symbol_only_text(cleaned_text):
                                 logger.info(f"Skipping symbol-only text: {cleaned_text}")
                                 continue
-                            # Avoid duplicates
-                            if cleaned_text not in all_texts:
-                                all_texts.append(cleaned_text)
-                                # Mark span-derived texts to prevent joining
-                                if "span:" in selector:
-                                    span_texts.add(cleaned_text)
-                                # Mark post-content p texts to allow joining
-                                elif "div.post-content p" in selector:
-                                    post_content_p_texts.add(cleaned_text)
+                            
+                            # Special handling for p.description - skip if content already exists
+                            if selector == "p.description" and cleaned_text in all_texts:
+                                continue
+                            
+                            # Special handling for div.newDescription p
+                            if selector == "div.newDescription p":
+                                # If this is a duplicate Khmer string in div.newDescription p,
+                                # replace with empty string to maintain alignment
+                                if cleaned_text in new_description_p_texts:
+                                    logger.info(f"Found duplicate Khmer in div.newDescription p, replacing with empty string: {cleaned_text[:50]}...")
+                                    all_texts.append("")  # Add empty string to maintain alignment
+                                else:
+                                    new_description_p_texts.append(cleaned_text)
+                                    all_texts.append(cleaned_text)
+                            else:
+                                # Avoid duplicates for other selectors
+                                if cleaned_text not in all_texts:
+                                    all_texts.append(cleaned_text)
+                                    # Mark span-derived texts to prevent joining
+                                    if "span:" in selector:
+                                        span_texts.add(cleaned_text)
+                                    # Mark post-content p texts to allow joining
+                                    elif "div.post-content p" in selector:
+                                        post_content_p_texts.add(cleaned_text)
 
             # Extract content from card structures
             card_content_selectors = [
@@ -260,18 +283,13 @@ class MoFAWebScraper:
             
             for text in all_texts:
                 lang = self.detect_language(text)
-                is_h5_text = text in h5_texts
-                is_span_text = text in span_texts
                 
                 if self.language == "1":  # English mode
                     if lang == 'english':
                         english_texts.append(text)
                     elif lang == 'khmer':
-                        # If scraping in English mode but h5 or span text is Khmer, return empty string
-                        if is_h5_text or is_span_text:
-                            english_texts.append("")
-                        else:
-                            english_texts.append(text)  # Non-h5/span Khmer text still added
+                        # If scraping in English mode, add empty string for Khmer text to maintain alignment
+                        english_texts.append("")
                     else:  # mixed content - prefer English in English mode
                         english_texts.append(text)
                         
@@ -279,11 +297,8 @@ class MoFAWebScraper:
                     if lang == 'khmer':
                         khmer_texts.append(text)
                     elif lang == 'english':
-                        # If scraping in Khmer mode but h5 or span text is English, return empty string
-                        if is_h5_text or is_span_text:
-                            khmer_texts.append("")
-                        else:
-                            khmer_texts.append(text)  # Non-h5/span English text still added
+                        # If scraping in Khmer mode, add empty string for English text to maintain alignment
+                        khmer_texts.append("")
                     else:  # mixed content - prefer Khmer in Khmer mode
                         khmer_texts.append(text)
             
@@ -296,11 +311,6 @@ class MoFAWebScraper:
                 
             # Assign English content
             content["english"] = english_texts
-
-            # Log error if English and Khmer text counts don't match
-            if len(english_texts) != len(content["khmer"]):
-                logger.error(f"Text count mismatch - English: {len(english_texts)}, Khmer: {len(content['khmer'])}")
-                logger.error(f"This may indicate content alignment issues in the extracted data")
 
             logger.info(
                 f"Final extraction: {len(content['english'])} English, {len(content['khmer'])} Khmer texts"
@@ -551,9 +561,6 @@ class MoFAWebScraper:
             span_texts = set()
         if post_content_p_texts is None:
             post_content_p_texts = set()
-            
-        # Filter to only include text with Khmer characters AND not empty strings
-        khmer_texts = [text for text in data if text and self.detect_language(text) == 'khmer']
         
         # Keep track of original order including empty strings
         result = []
